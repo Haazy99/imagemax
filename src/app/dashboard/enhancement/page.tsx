@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useRef } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
@@ -22,16 +22,28 @@ export default function EnhancementPage() {
   const [processedImage, setProcessedImage] = useState<string | null>(null)
   const [enhancementType, setEnhancementType] = useState("auto")
   const [intensity, setIntensity] = useState(50)
+  const [metadata, setMetadata] = useState<{
+    width: number;
+    height: number;
+    format: string;
+    enhancementType: string;
+    intensity: number;
+  } | null>(null)
   const { success, error } = useToast()
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  const [selectedFile, setSelectedFile] = useState<File | null>(null)
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (file) {
       setIsUploading(true)
+      setSelectedFile(file)
       const reader = new FileReader()
       reader.onloadend = () => {
         setPreviewImage(reader.result as string)
         setIsUploading(false)
+        setProcessedImage(null)
+        setMetadata(null)
         success("Image uploaded successfully", "You can now enhance the image")
       }
       reader.onerror = () => {
@@ -43,16 +55,53 @@ export default function EnhancementPage() {
   }
 
   const handleEnhance = async () => {
-    if (!previewImage) return
+    if (!selectedFile) {
+      error("No image selected", "Please upload an image first")
+      return
+    }
 
     setIsProcessing(true)
     try {
-      // TODO: Implement enhancement API call
-      await new Promise((resolve) => setTimeout(resolve, 2000)) // Simulated API call
-      setProcessedImage(previewImage) // Replace with actual enhanced image
+      // Create form data
+      const formData = new FormData()
+      formData.append('file', selectedFile)
+      formData.append('type', enhancementType)
+      formData.append('intensity', intensity.toString())
+
+      // Call the API
+      const response = await fetch('/api/enhance', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to enhance image')
+      }
+
+      if (!data.data) {
+        throw new Error('No image data received from API')
+      }
+
+      // Create blob URL from base64
+      const binaryString = atob(data.data)
+      const bytes = new Uint8Array(binaryString.length)
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i)
+      }
+      const blob = new Blob([bytes], { type: `image/${data.metadata.format}` })
+      const url = URL.createObjectURL(blob)
+      
+      setProcessedImage(url)
+      setMetadata(data.metadata)
       success("Image enhanced successfully", "Your image is ready to download")
     } catch (err) {
-      error("Processing failed", "Failed to enhance image. Please try again.")
+      console.error('Error enhancing image:', err)
+      error(
+        "Processing failed", 
+        err instanceof Error ? err.message : "Failed to enhance image. Please try again."
+      )
     } finally {
       setIsProcessing(false)
     }
@@ -60,8 +109,14 @@ export default function EnhancementPage() {
 
   const handleDownload = () => {
     if (!processedImage) return
-    // TODO: Implement download functionality
-    success("Download started", "Your image is being downloaded")
+    
+    const link = document.createElement('a')
+    link.href = processedImage
+    link.download = `enhanced-image.${metadata?.format || 'png'}`
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
+    success("Download started", "Your enhanced image is being downloaded")
   }
 
   return (
@@ -102,6 +157,7 @@ export default function EnhancementPage() {
                     onChange={handleImageUpload}
                     className="hidden"
                     id="image-upload"
+                    ref={fileInputRef}
                   />
                   <label
                     htmlFor="image-upload"
@@ -123,14 +179,23 @@ export default function EnhancementPage() {
           <CardContent>
             <div className="flex flex-col items-center justify-center gap-4">
               {processedImage ? (
-                <div className="relative aspect-square w-full max-w-md overflow-hidden rounded-lg">
-                  <Image
-                    src={processedImage}
-                    alt="Enhanced"
-                    fill
-                    className="object-contain"
-                  />
-                </div>
+                <>
+                  <div className="relative aspect-square w-full max-w-md overflow-hidden rounded-lg">
+                    <Image
+                      src={processedImage}
+                      alt="Enhanced"
+                      fill
+                      className="object-contain"
+                    />
+                  </div>
+                  {metadata && (
+                    <div className="space-y-1 text-sm text-muted-foreground">
+                      <p>Original size: {metadata.width} × {metadata.height}px</p>
+                      <p>Enhancement: {metadata.enhancementType} ({metadata.intensity}%)</p>
+                      <p>Format: {metadata.format.toUpperCase()}</p>
+                    </div>
+                  )}
+                </>
               ) : (
                 <div className="flex h-64 w-full max-w-md flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-50">
                   <Wand2 className="h-12 w-12 text-gray-400" />
@@ -186,7 +251,7 @@ export default function EnhancementPage() {
       <div className="flex justify-center gap-4">
         <Button
           onClick={handleEnhance}
-          disabled={!previewImage || isProcessing}
+          disabled={!selectedFile || isProcessing}
           className="min-w-[200px]"
         >
           {isProcessing ? (
@@ -195,7 +260,10 @@ export default function EnhancementPage() {
               Processing...
             </>
           ) : (
-            "Enhance Image"
+            <>
+              <Wand2 className="mr-2 h-4 w-4" />
+              Enhance Image
+            </>
           )}
         </Button>
         <Button

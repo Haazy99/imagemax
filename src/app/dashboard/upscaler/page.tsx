@@ -1,211 +1,232 @@
 "use client"
 
-import { useState } from "react"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Button } from "@/components/ui/button"
-import { useToast } from "@/hooks/use-toast"
-import { Upload, Download, Loader2, Maximize2 } from "lucide-react"
-import Image from "next/image"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
+import { useState, useRef } from 'react'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { useToast } from '@/hooks/use-toast'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Loader2, Upload, Download } from 'lucide-react'
+import Image from 'next/image'
+import { Slider } from '@/components/ui/slider'
 
 export default function UpscalerPage() {
-  const [isUploading, setIsUploading] = useState(false)
-  const [isProcessing, setIsProcessing] = useState(false)
-  const [previewImage, setPreviewImage] = useState<string | null>(null)
-  const [processedImage, setProcessedImage] = useState<string | null>(null)
-  const [upscaleFactor, setUpscaleFactor] = useState("2")
-  const [quality, setQuality] = useState("high")
   const { success, error } = useToast()
+  const [isLoading, setIsLoading] = useState(false)
+  const [originalImage, setOriginalImage] = useState<string | null>(null)
+  const [processedImage, setProcessedImage] = useState<string | null>(null)
+  const [scale, setScale] = useState(2)
+  const [metadata, setMetadata] = useState<{
+    originalWidth: number;
+    originalHeight: number;
+    newWidth: number;
+    newHeight: number;
+    scale: number;
+  } | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
-    if (file) {
-      setIsUploading(true)
-      const reader = new FileReader()
-      reader.onloadend = () => {
-        setPreviewImage(reader.result as string)
-        setIsUploading(false)
-        success("Image uploaded successfully", "You can now upscale the image")
-      }
-      reader.onerror = () => {
-        setIsUploading(false)
-        error("Upload failed", "Please try uploading the image again")
-      }
-      reader.readAsDataURL(file)
+    if (!file) return
+
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      error('Invalid file type', 'Please upload an image file')
+      return
     }
+
+    // Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      error('File too large', 'Please upload an image smaller than 10MB')
+      return
+    }
+
+    // Create URL for preview
+    const imageUrl = URL.createObjectURL(file)
+    setOriginalImage(imageUrl)
+    setProcessedImage(null)
   }
 
   const handleUpscale = async () => {
-    if (!previewImage) return
+    if (!originalImage) return
 
-    setIsProcessing(true)
     try {
-      // TODO: Implement upscaling API call
-      await new Promise((resolve) => setTimeout(resolve, 2000)) // Simulated API call
-      setProcessedImage(previewImage) // Replace with actual upscaled image
-      success("Image upscaled successfully", "Your image is ready to download")
+      setIsLoading(true)
+      setMetadata(null)
+
+      // Get the file from the input
+      const file = fileInputRef.current?.files?.[0]
+      if (!file) {
+        error('No file selected', 'Please select an image first')
+        return
+      }
+
+      // Create form data
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('scale', scale.toString())
+
+      // Call the API
+      const response = await fetch('/api/upscale', {
+        method: 'POST',
+        body: formData,
+      })
+
+      const data = await response.json()
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to upscale image')
+      }
+
+      if (!data.data) {
+        throw new Error('No image data received from API')
+      }
+
+      // Create blob URL from base64
+      const binaryString = atob(data.data)
+      const bytes = new Uint8Array(binaryString.length)
+      for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i)
+      }
+      const blob = new Blob([bytes], { type: 'image/png' })
+      const url = URL.createObjectURL(blob)
+      
+      setProcessedImage(url)
+      setMetadata(data.metadata)
+      success('Image upscaled successfully', 'Your image is ready to download')
     } catch (err) {
-      error("Processing failed", "Failed to upscale image. Please try again.")
+      console.error('Error upscaling image:', err)
+      error(
+        'Failed to upscale image',
+        err instanceof Error ? err.message : 'Please try again'
+      )
     } finally {
-      setIsProcessing(false)
+      setIsLoading(false)
     }
   }
 
   const handleDownload = () => {
     if (!processedImage) return
-    // TODO: Implement download functionality
-    success("Download started", "Your image is being downloaded")
+
+    const link = document.createElement('a')
+    link.href = processedImage
+    link.download = 'upscaled-image.png'
+    document.body.appendChild(link)
+    link.click()
+    document.body.removeChild(link)
   }
 
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-3xl font-bold tracking-tight">Image Upscaler</h2>
+        <h1 className="text-3xl font-bold">Image Upscaler</h1>
         <p className="text-muted-foreground">
-          Enhance your images with AI-powered upscaling
+          Enhance your images with high-quality upscaling
         </p>
       </div>
 
       <div className="grid gap-6 md:grid-cols-2">
-        {/* Upload Section */}
         <Card>
           <CardHeader>
-            <CardTitle>Upload Image</CardTitle>
+            <CardTitle>Original Image</CardTitle>
+            <CardDescription>
+              Upload an image to upscale
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col items-center justify-center gap-4">
-              {previewImage ? (
-                <div className="relative aspect-square w-full max-w-md overflow-hidden rounded-lg">
+            <div className="space-y-4">
+              <div className="grid w-full max-w-sm items-center gap-1.5">
+                <Label htmlFor="image">Image</Label>
+                <Input
+                  id="image"
+                  type="file"
+                  accept="image/*"
+                  onChange={handleFileChange}
+                  ref={fileInputRef}
+                  className="cursor-pointer"
+                />
+              </div>
+
+              {originalImage && (
+                <div className="relative aspect-square w-full overflow-hidden rounded-lg border">
                   <Image
-                    src={previewImage}
-                    alt="Preview"
+                    src={originalImage}
+                    alt="Original"
                     fill
                     className="object-contain"
                   />
                 </div>
-              ) : (
-                <div className="flex h-64 w-full max-w-md flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-50">
-                  <Upload className="h-12 w-12 text-gray-400" />
-                  <p className="mt-2 text-sm text-gray-500">
-                    Drag and drop your image here, or click to select
-                  </p>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={handleImageUpload}
-                    className="hidden"
-                    id="image-upload"
-                  />
-                  <label
-                    htmlFor="image-upload"
-                    className="mt-4 cursor-pointer rounded-md bg-primary px-4 py-2 text-sm font-medium text-white hover:bg-primary/90"
-                  >
-                    Select Image
-                  </label>
-                </div>
               )}
+
+              <div className="space-y-2">
+                <Label>Upscale Factor: {scale}x</Label>
+                <Slider
+                  value={[scale]}
+                  onValueChange={(value) => setScale(value[0])}
+                  min={2}
+                  max={4}
+                  step={1}
+                  disabled={isLoading}
+                />
+              </div>
+
+              <Button
+                onClick={handleUpscale}
+                disabled={!originalImage || isLoading}
+                className="w-full"
+              >
+                {isLoading ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Upscaling...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="mr-2 h-4 w-4" />
+                    Upscale Image
+                  </>
+                )}
+              </Button>
             </div>
           </CardContent>
         </Card>
 
-        {/* Processing Section */}
         <Card>
           <CardHeader>
             <CardTitle>Upscaled Image</CardTitle>
+            <CardDescription>
+              Your enhanced image
+            </CardDescription>
           </CardHeader>
           <CardContent>
-            <div className="flex flex-col items-center justify-center gap-4">
-              {processedImage ? (
-                <div className="relative aspect-square w-full max-w-md overflow-hidden rounded-lg">
-                  <Image
-                    src={processedImage}
-                    alt="Upscaled"
-                    fill
-                    className="object-contain"
-                  />
-                </div>
-              ) : (
-                <div className="flex h-64 w-full max-w-md flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-50">
-                  <Maximize2 className="h-12 w-12 text-gray-400" />
-                  <p className="mt-2 text-sm text-gray-500">
-                    Upscaled image will appear here
-                  </p>
-                </div>
+            <div className="space-y-4">
+              {processedImage && metadata && (
+                <>
+                  <div className="relative aspect-square w-full overflow-hidden rounded-lg border bg-muted">
+                    <Image
+                      src={processedImage}
+                      alt="Upscaled"
+                      fill
+                      className="object-contain"
+                    />
+                  </div>
+                  <div className="space-y-2 text-sm text-muted-foreground">
+                    <p>Original size: {metadata.originalWidth} × {metadata.originalHeight}px</p>
+                    <p>New size: {metadata.newWidth} × {metadata.newHeight}px</p>
+                    <p>Scale factor: {metadata.scale}x</p>
+                  </div>
+                  <Button
+                    onClick={handleDownload}
+                    className="w-full"
+                  >
+                    <Download className="mr-2 h-4 w-4" />
+                    Download Image
+                  </Button>
+                </>
               )}
             </div>
           </CardContent>
         </Card>
-      </div>
-
-      {/* Settings */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Upscaling Settings</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-4 md:grid-cols-2">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Upscale Factor</label>
-              <Select value={upscaleFactor} onValueChange={setUpscaleFactor}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select upscale factor" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="2">2x</SelectItem>
-                  <SelectItem value="3">3x</SelectItem>
-                  <SelectItem value="4">4x</SelectItem>
-                  <SelectItem value="8">8x</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Quality</label>
-              <Select value={quality} onValueChange={setQuality}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select quality" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="low">Low (Faster)</SelectItem>
-                  <SelectItem value="medium">Medium</SelectItem>
-                  <SelectItem value="high">High (Better Quality)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Action Buttons */}
-      <div className="flex justify-center gap-4">
-        <Button
-          onClick={handleUpscale}
-          disabled={!previewImage || isProcessing}
-          className="min-w-[200px]"
-        >
-          {isProcessing ? (
-            <>
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Processing...
-            </>
-          ) : (
-            "Upscale Image"
-          )}
-        </Button>
-        <Button
-          onClick={handleDownload}
-          disabled={!processedImage}
-          variant="outline"
-          className="min-w-[200px]"
-        >
-          <Download className="mr-2 h-4 w-4" />
-          Download
-        </Button>
       </div>
     </div>
   )
