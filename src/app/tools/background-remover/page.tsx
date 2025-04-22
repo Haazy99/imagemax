@@ -1,47 +1,91 @@
 "use client"
 
-import { useState, useRef } from "react"
+import { useState, useRef, useEffect } from "react"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { useToast } from "@/hooks/use-toast"
-import { Upload, Download, Loader2, FileImage } from "lucide-react"
+import { Upload, Download, Loader2, FileImage, Wand2 } from "lucide-react"
 import Image from "next/image"
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select"
-import { Slider } from "@/components/ui/slider"
+import { createClient } from '@supabase/supabase-js'
 import { checkStorageQuota } from '@/lib/storage'
 import { StorageUsage } from '@/components/storage-usage'
 
+interface ProcessedImage {
+  success: boolean
+  processedUrl?: string
+  error?: string
+  processId?: string
+  metadata: {
+    originalSize: number
+    processedSize: number
+    format: string
+    width: number
+    height: number
+  }
+  originalUrl?: string
+}
+
 type ProcessStatus = 'pending' | 'processing' | 'completed' | 'failed'
 
-export default function ConverterPage() {
+export default function BackgroundRemoverPage() {
   const [isUploading, setIsUploading] = useState(false)
   const [isDownloading, setIsDownloading] = useState(false)
   const [processStatus, setProcessStatus] = useState<ProcessStatus>('pending')
+  const [currentProcessId, setCurrentProcessId] = useState<string | null>(null)
   const [previewImage, setPreviewImage] = useState<string | null>(null)
   const [processedImage, setProcessedImage] = useState<string | null>(null)
   const [originalUrl, setOriginalUrl] = useState<string | null>(null)
   const [processedUrl, setProcessedUrl] = useState<string | null>(null)
-  const [outputFormat, setOutputFormat] = useState("webp")
-  const [quality, setQuality] = useState(80)
-  const [metadata, setMetadata] = useState<{
-    width: number;
-    height: number;
-    inputFormat: string;
-    outputFormat: string;
-    quality: number;
-    originalSize: number;
-    processedSize: number;
-  } | null>(null)
+  const [metadata, setMetadata] = useState<ProcessedImage['metadata'] | null>(null)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  
   const { success, error } = useToast()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
-  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+
+  const supabase = createClient(
+    process.env.NEXT_PUBLIC_SUPABASE_URL!,
+    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+  )
+
+  // Poll for status updates when processing
+  useEffect(() => {
+    let intervalId: NodeJS.Timeout
+
+    const checkStatus = async () => {
+      if (currentProcessId && processStatus === 'processing') {
+        const { data, error: queryError } = await supabase
+          .from('processed_images')
+          .select('*')
+          .eq('id', currentProcessId)
+          .single()
+
+        if (data) {
+          setProcessStatus(data.status)
+          if (data.status === 'completed') {
+            setProcessedImage(data.processed_image_url)
+            setOriginalUrl(data.original_image_url)
+            setProcessedUrl(data.processed_image_url)
+            setMetadata(data.image_metadata)
+            success("Background removed successfully", "Your image is ready to download.")
+          } else if (data.status === 'failed') {
+            setErrorMessage(data.error_message || 'Processing failed')
+            error("Processing failed", data.error_message || "Failed to remove background")
+          }
+        }
+      }
+    }
+
+    if (processStatus === 'processing') {
+      intervalId = setInterval(checkStatus, 2000) // Poll every 2 seconds
+    }
+
+    return () => {
+      if (intervalId) {
+        clearInterval(intervalId)
+      }
+    }
+  }, [currentProcessId, processStatus, supabase, success, error])
 
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
@@ -68,6 +112,7 @@ export default function ConverterPage() {
 
     setProcessStatus('pending')
     setSelectedFile(file)
+    setCurrentProcessId(null)
     setProcessedImage(null)
     setOriginalUrl(null)
     setProcessedUrl(null)
@@ -79,9 +124,12 @@ export default function ConverterPage() {
     setPreviewImage(imageUrl)
   }
 
-  const handleConvert = async () => {
+  const handleRemoveBackground = async () => {
     if (!selectedFile) {
-      error("No image selected", "Please upload an image first")
+      error(
+        "No image selected",
+        "Please upload an image first."
+      )
       return
     }
 
@@ -91,32 +139,39 @@ export default function ConverterPage() {
     try {
       const formData = new FormData()
       formData.append('file', selectedFile)
-      formData.append('format', outputFormat)
-      formData.append('quality', quality.toString())
 
-      const response = await fetch('/api/convert', {
+      const response = await fetch('/api/tools/background-remover', {
         method: 'POST',
         body: formData,
       })
 
-      const data = await response.json()
+      const result: ProcessedImage = await response.json()
 
       if (!response.ok) {
-        throw new Error(data.error || data.details || 'Failed to convert image')
+        throw new Error(result.error || 'Failed to remove background')
       }
 
+      if (result.processId) {
+        setCurrentProcessId(result.processId)
+      }
+
+      if (!result.processedUrl) {
+        throw new Error('No processed image URL received from API')
+      }
+
+      // Set the processed image URL directly
+      setProcessedImage(result.processedUrl)
+      setProcessedUrl(result.processedUrl)
       setProcessStatus('completed')
-      setProcessedImage(data.processedUrl)
-      setOriginalUrl(data.originalUrl)
-      setProcessedUrl(data.processedUrl)
-      setMetadata(data.metadata)
-      success("Image converted successfully", "Your image is ready to download")
+      success('Background removed successfully', 'Your image is ready to download')
     } catch (err) {
-      console.error('Error converting image:', err)
+      console.error('Error removing background:', err)
       setProcessStatus('failed')
-      const errorMsg = err instanceof Error ? err.message : "Failed to convert image. Please try again."
-      setErrorMessage(errorMsg)
-      error("Conversion failed", errorMsg)
+      setErrorMessage(err instanceof Error ? err.message : "Failed to remove background")
+      error(
+        "Processing failed",
+        err instanceof Error ? err.message : "Failed to remove background. Please try again."
+      )
     }
   }
 
@@ -130,12 +185,15 @@ export default function ConverterPage() {
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
       link.href = url
-      link.download = `converted-image.${metadata?.outputFormat || 'webp'}`
+      link.download = `background-removed-${Date.now()}.png`
       document.body.appendChild(link)
       link.click()
       document.body.removeChild(link)
       window.URL.revokeObjectURL(url)
-      success("Download started", "Your converted image is being downloaded")
+      success(
+        "Download started",
+        "Your processed image is being downloaded."
+      )
     } catch (err) {
       error(
         "Download failed",
@@ -146,12 +204,27 @@ export default function ConverterPage() {
     }
   }
 
+  const getStatusMessage = () => {
+    switch (processStatus) {
+      case 'pending':
+        return 'Ready to process'
+      case 'processing':
+        return 'Removing background...'
+      case 'completed':
+        return 'Background removed successfully'
+      case 'failed':
+        return errorMessage || 'Processing failed'
+      default:
+        return ''
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-3xl font-bold">Image Converter</h1>
+        <h1 className="text-3xl font-bold">Background Remover</h1>
         <p className="text-muted-foreground">
-          Convert your images to different formats
+          Remove backgrounds from your images with AI
         </p>
       </div>
 
@@ -169,7 +242,7 @@ export default function ConverterPage() {
                 <div className="relative aspect-square w-full max-w-md overflow-hidden rounded-lg">
                   <Image
                     src={previewImage}
-                    alt="Preview"
+                    alt="Original"
                     fill
                     className="object-contain"
                   />
@@ -200,10 +273,10 @@ export default function ConverterPage() {
           </CardContent>
         </Card>
 
-        {/* Processing Section */}
+        {/* Result Section */}
         <Card>
           <CardHeader>
-            <CardTitle>Converted Image</CardTitle>
+            <CardTitle>Processed Image</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="flex flex-col items-center justify-center gap-4">
@@ -212,7 +285,7 @@ export default function ConverterPage() {
                   <div className="relative aspect-square w-full max-w-md overflow-hidden rounded-lg">
                     <Image
                       src={processedImage}
-                      alt="Converted"
+                      alt="Processed"
                       fill
                       className="object-contain"
                     />
@@ -220,8 +293,7 @@ export default function ConverterPage() {
                   {metadata && (
                     <div className="space-y-1 text-sm text-muted-foreground">
                       <p>Original size: {metadata.width} × {metadata.height}px</p>
-                      <p>Original format: {metadata.inputFormat.toUpperCase()}</p>
-                      <p>Converted to: {metadata.outputFormat.toUpperCase()} ({metadata.quality}% quality)</p>
+                      <p>Format: {metadata.format.toUpperCase()}</p>
                       <p>Original size: {(metadata.originalSize / 1024).toFixed(2)}KB</p>
                       <p>Processed size: {(metadata.processedSize / 1024).toFixed(2)}KB</p>
                     </div>
@@ -248,7 +320,7 @@ export default function ConverterPage() {
                 <div className="flex h-64 w-full max-w-md flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 bg-gray-50">
                   <FileImage className="h-12 w-12 text-gray-400" />
                   <p className="mt-2 text-sm text-gray-500">
-                    Converted image will appear here
+                    Processed image will appear here
                   </p>
                 </div>
               )}
@@ -257,77 +329,31 @@ export default function ConverterPage() {
         </Card>
       </div>
 
-      {/* Settings */}
-      <Card>
-        <CardHeader>
-          <CardTitle>Conversion Settings</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <div className="grid gap-6 md:grid-cols-2">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Output Format</label>
-              <Select value={outputFormat} onValueChange={setOutputFormat}>
-                <SelectTrigger>
-                  <SelectValue placeholder="Select output format" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="webp">WebP</SelectItem>
-                  <SelectItem value="png">PNG</SelectItem>
-                  <SelectItem value="jpg">JPEG</SelectItem>
-                  <SelectItem value="avif">AVIF</SelectItem>
-                  <SelectItem value="gif">GIF</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Quality</label>
-              <div className="flex items-center gap-4">
-                <Slider
-                  value={[quality]}
-                  onValueChange={(value) => setQuality(value[0])}
-                  max={100}
-                  step={1}
-                  className="flex-1"
-                />
-                <span className="min-w-[3rem] text-sm">{quality}%</span>
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
-
       {/* Action Button */}
       <div className="flex justify-center">
         <Button
-          onClick={handleConvert}
+          onClick={handleRemoveBackground}
           disabled={!selectedFile || processStatus === 'processing'}
           className="w-full max-w-md"
         >
           {processStatus === 'processing' ? (
             <>
               <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              Converting...
+              Processing...
             </>
           ) : (
             <>
-              <FileImage className="mr-2 h-4 w-4" />
-              Convert Image
+              <Wand2 className="mr-2 h-4 w-4" />
+              Remove Background
             </>
           )}
         </Button>
       </div>
 
       {/* Status Message */}
-      {processStatus !== 'pending' && (
+      {getStatusMessage() && (
         <div className="text-center text-sm text-muted-foreground">
-          {processStatus === 'processing' && 'Converting image...'}
-          {processStatus === 'completed' && 'Image converted successfully'}
-          {processStatus === 'failed' && (
-            <div className="text-red-500">
-              <p>Failed to convert image</p>
-              {errorMessage && <p className="mt-1 text-xs">{errorMessage}</p>}
-            </div>
-          )}
+          {getStatusMessage()}
         </div>
       )}
     </div>

@@ -68,7 +68,7 @@ export default function BackgroundRemoverPage() {
       formData.append('file', file)
 
       // Call the API
-      const response = await fetch('/api/remove-background', {
+      const response = await fetch('/api/tools/background-remover', {
         method: 'POST',
         body: formData,
       })
@@ -79,20 +79,12 @@ export default function BackgroundRemoverPage() {
         throw new Error(data.error || 'Failed to remove background')
       }
 
-      if (!data.data) {
+      if (!data.success || !data.processedUrl) {
         throw new Error('No image data received from API')
       }
 
-      // Create blob URL from base64
-      const binaryString = atob(data.data)
-      const bytes = new Uint8Array(binaryString.length)
-      for (let i = 0; i < binaryString.length; i++) {
-        bytes[i] = binaryString.charCodeAt(i)
-      }
-      const blob = new Blob([bytes], { type: 'image/png' })
-      const url = URL.createObjectURL(blob)
-      
-      setProcessedImage(url)
+      // Set the processed image URL
+      setProcessedImage(data.processedUrl)
       success('Background removed successfully', 'Your image is ready to download')
     } catch (err) {
       console.error('Error removing background:', err)
@@ -108,6 +100,7 @@ export default function BackgroundRemoverPage() {
   const handleDownload = () => {
     if (!processedImage) return
 
+    // Create a link to download the image
     const link = document.createElement('a')
     link.href = processedImage
     link.download = 'removed-background.png'

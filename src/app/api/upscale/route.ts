@@ -1,8 +1,38 @@
 import { NextResponse } from 'next/server'
 import sharp from 'sharp'
+import { createServerClient } from '@supabase/ssr'
+import { cookies } from 'next/headers'
 
 export async function POST(req: Request) {
   try {
+    // Get user session
+    const cookieStore = cookies()
+    const supabase = createServerClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+      {
+        cookies: {
+          get(name: string) {
+            return cookieStore.get(name)?.value
+          },
+          set(name: string, value: string, options: any) {
+            cookieStore.set({ name, value, ...options })
+          },
+          remove(name: string, options: any) {
+            cookieStore.set({ name, value: '', ...options })
+          },
+        },
+      }
+    )
+    
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session) {
+      return NextResponse.json(
+        { error: 'Unauthorized' },
+        { status: 401 }
+      )
+    }
+
     const formData = await req.formData()
     const file = formData.get('file') as File
     const scale = parseInt(formData.get('scale') as string || '2')
@@ -14,12 +44,13 @@ export async function POST(req: Request) {
       )
     }
 
-    // Convert File to Buffer
-    const arrayBuffer = await file.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
+    const startTime = Date.now()
+
+    // Get original image buffer
+    const originalBuffer = Buffer.from(await file.arrayBuffer())
 
     // Get image metadata
-    const metadata = await sharp(buffer).metadata()
+    const metadata = await sharp(originalBuffer).metadata()
     const { width = 0, height = 0, format } = metadata
 
     if (width === 0 || height === 0) {
@@ -34,8 +65,7 @@ export async function POST(req: Request) {
     const newHeight = height * scale
 
     // Implement progressive upscaling for better quality
-    // For larger scale factors, we'll upscale in steps
-    let currentBuffer: Buffer = buffer
+    let currentBuffer: Buffer = originalBuffer
     let currentWidth = width
     let currentHeight = height
     
@@ -99,18 +129,82 @@ export async function POST(req: Request) {
       })
       .toBuffer()
 
-    // Convert to base64
-    const base64Image = processedBuffer.toString('base64')
+    // Upload original and processed images to storage
+    const originalPath = `${session.user.id}/upscaler/${Date.now()}-original.${file.type.split('/')[1]}`
+    const processedPath = `${session.user.id}/upscaler/${Date.now()}-processed.${format === 'jpeg' ? 'jpg' : 'png'}`
+
+    // Upload original image
+    const { error: originalUploadError } = await supabase.storage
+      .from('images')
+      .upload(originalPath, originalBuffer, {
+        contentType: file.type,
+        cacheControl: '3600',
+      })
+
+    if (originalUploadError) {
+      throw new Error('Failed to upload original image')
+    }
+
+    // Upload processed image
+    const { error: processedUploadError } = await supabase.storage
+      .from('images')
+      .upload(processedPath, processedBuffer, {
+        contentType: format === 'jpeg' ? 'image/jpeg' : 'image/png',
+        cacheControl: '3600',
+      })
+
+    if (processedUploadError) {
+      throw new Error('Failed to upload processed image')
+    }
+
+    // Get public URLs
+    const { data: originalUrl } = supabase.storage
+      .from('images')
+      .getPublicUrl(originalPath)
+
+    const { data: processedUrl } = supabase.storage
+      .from('images')
+      .getPublicUrl(processedPath)
+
+    // Save to database
+    const { error: dbError } = await supabase
+      .from('processed_images')
+      .insert({
+        user_id: session.user.id,
+        original_image_url: originalUrl.publicUrl,
+        processed_image_url: processedUrl.publicUrl,
+        tool_type: 'upscaler',
+        settings: {
+          scale,
+          format: format === 'jpeg' ? 'jpg' : 'png'
+        },
+        file_size: processedBuffer.length,
+        image_metadata: {
+          ...metadata,
+          originalSize: originalBuffer.length,
+          processedSize: processedBuffer.length
+        },
+        status: 'completed',
+        processing_duration: Date.now() - startTime,
+      })
+
+    if (dbError) {
+      throw new Error('Failed to save to database')
+    }
 
     return NextResponse.json({ 
-      data: base64Image,
+      success: true,
+      originalUrl: originalUrl.publicUrl,
+      processedUrl: processedUrl.publicUrl,
       metadata: {
         originalWidth: width,
         originalHeight: height,
         newWidth,
         newHeight,
         scale,
-        format: format || 'png'
+        format: format || 'png',
+        originalSize: originalBuffer.length,
+        processedSize: processedBuffer.length
       }
     })
   } catch (error) {
