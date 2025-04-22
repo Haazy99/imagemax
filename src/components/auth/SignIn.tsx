@@ -23,25 +23,30 @@ export function SignIn() {
   const { signIn, signInWithGoogle } = useAuth()
   const { toast } = useToast()
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault()
     setLoading(true)
-    setError(null)
+    if (!email || !password) {
+      setLoading(false)
+      setError('Please enter both email and password')
+      return
+    }
 
     try {
       await signIn(email, password)
-      const redirectTo = searchParams.get('redirectedFrom') || '/dashboard'
+      const redirectTo = searchParams?.get('redirectedFrom') || '/dashboard'
       router.push(redirectTo)
       toast({
         title: "Success",
-        description: "You have been signed in successfully.",
+        description: "You have successfully signed in."
       })
-    } catch (error: any) {
-      setError(error.message || 'Failed to sign in')
+    } catch (err) {
+      console.error('Error signing in:', err)
+      setError('Invalid email or password')
       toast({
         title: "Error",
-        description: error.message || 'Failed to sign in',
-        variant: "destructive",
+        description: "Failed to sign in. Please check your credentials.",
+        variant: "destructive"
       })
     } finally {
       setLoading(false)

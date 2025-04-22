@@ -5,4 +5,4 @@ const handler = NextAuth(authConfig);
 
 export { handler as GET, handler as POST };
 
-export const runtime = "edge"; 
+export const runtime = "nodejs"; 
